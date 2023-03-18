@@ -1,100 +1,279 @@
-import os
-url=''
+import json
+import requests
+import tldextract
+from bs4 import BeautifulSoup
+from urllib.parse import urlsplit
+from urllib.parse import urlparse
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram.ext import CallbackQueryHandler
+from telegram.ext import (
+    Updater,
+    CommandHandler,
+    MessageHandler,
+    Filters,
+    CallbackContext,
+)
 
-#List of publicly discovered open_redirects.
-open_redirect=[ '--- URLS with Redirection Notice ---\n',
+TELEGRAM_BOT_TOKEN = "BOT_TOKEN"
+CHATGPT_TOKEN = "CHAT_GPT_API_KEY"
 
-                'https://www.google.com/url?q=',  # Redirect using Google .[  Google Redirect Notice. ] [ source: Google ]
-                'https://google.com/url?q='     , # Variant of above redirect. [ Warning prsent ] [ source: M.Anish ]
-                'https://facebook.com/l.php?u=',  # Facebook Open Redirect       [ source : Google ]
+def load_allowed_users(filename):
+    with open(filename, 'r') as file:
+        allowed_users = [int(line.strip()) for line in file.readlines()]
+    return allowed_users
 
-                '\n--- URLS with No Redirection Warnings ---\n',
+def load_credits(filename):
+    with open(filename, 'r') as file:
+        credits = [line.strip() for line in file.readlines()]
+    return credits
 
-                'https://via.hypothes.is/' ,      # Annotation service.     [ No warning ] [ source : Google ]
-                'http://vk.com/away.php?to=',     # Open Redirect in Russian Social Media vk.com [ No warning! ]
-                'https://googleweblight.com/i?u=' ,# Redirect using Googleweblight [ No warning ]  [ source: Google ]
-                'https://l.wl.co/l?u=',              # Open_redirect Whatsapp Business Account Profile website links. [ source:M.Anish]
-                'https://tor2web.onionsearchengine.com/index.php?q=', #Open_redirect in Proxy.[ No warning ][ source: M.Anish]
-                'https://proxy.torgateway.com/index.php?q=',  #Open_redirect.[ No warning ][ source: M.Anish ] 
-                'https://onionengine.com/url.php?u=', #Open_redirect.[ No warning ][ source: M.Anish ] 
-                'http://raspe.id.au/bypass/miniProxy.php?', #Open_redirect in proxy [ No warning ] [ Difficult to detect ]
-                'https://www.awin1.com/cread.php?awinmid=6798&awinaffid=673201&ued=', # [ No warning ]
-                'https://www.anrdoezrs.net/click-6361382-15020510?url=', # [ No warning ]
-                'https://www.digit.in/flipkart/intermediate?url=', # [ Easy to detect ]
-                'https://adclick.g.doubleclick.net/pcs/click?xai=AKAOjstFA55hCSrFSTBDNko3225YAz6GkouTQlHjExWXRbT5OPMnSlE8Wh4LAVp-D7jWRr-LcKW0w-HH1g8lCVAK_eU-5azfUXfjqfTiHFOFWV9I8m2ZaGczGlov1iY8kMSnelCX-AHG6VYBmpcZJapT1XbdlOM3B9u9whYqpkxEpFLbkzwDao00-DL8JyS7UIxIApb_JHANRmtKLSuRcM8IWqFaP0cOc8n8jTedmwHc8oAw2MV2tRUaAnN3eaxaESpc8fovDeWslJ0A3duo5g46YzCYxQ8A56RI5MGcQw4TZj6TeWuj6jRjAe7g0X18--IBmztC1sUi6XuHkB1Ew-z_h9bv1XK-s_9L6zeDfQPtMsI3hOqp8T8545VdgCoElxs&sig=Cg0ArKJSzEpZ_YMvCKWCEAE&fbs_aeid=[gw_fbsaeid]&urlfix=1&adurl=', # [ No warning ]
-                'https://shop-links.co/link?publisher_slug=future&exclusive=1&u1=tomsguide-in-2620345246174741000&url=', # [ No warning ]
-                'https://www.womginx.gq/main/', # Open_redirect in proxy [ No warning ] 
-                'https://wassupwomiwi.herokuapp.com/main/', # Open_redirect in proxy [ No warning ] 
-                'https://womginx.arph.org/main/', # Open_redirect in proxy [ No warning ] 
-                'https://wg.abcya.ga/main/', # Open_redirect in proxy [ No warning ] 
-                'https://e.lexiapowerup.ga/main/', # Open_redirect in proxy [ No warning ] 
-                'http://seelenotseelie.herokuapp.com/main/', # Open_redirect in proxy [ No warning ] 
-                'https://elzxs.herokuapp.com/main/', # Open_redirect in proxy [ No warning ] 
-                'https://kavenciwomginx.herokuapp.com/main/', # Open_redirect in proxy [ No warning ] 
-                'https://back4app.herokuapp.com/main/', # Open_redirect in proxy [ No warning ] 
-                'https://bananalearning.herokuapp.com/main/', # Open_redirect in proxy [ No warning ] 
-                'https://meumundomaisdigital.com.br/wp-content/plugins/super-links/application/helpers/super-links-proxy.php?', # Open_redirect in proxy [ No warning ] 
-                'http://media.mailadam.com/proxy/index.php?', # Open_redirect in proxy [ No warning ] 
-                'http://f2pool.cam/index.php?', # Open_redirect in proxy [ No warning ] 
-                'https://www.coinmarketguide.com/index.php?', # Open_redirect in proxy [ No warning ] 
-                'https://loja.rarp.com.br/wp-content/plugins/super-links/application/helpers/super-links-proxy.php?', # Open_redirect in proxy [ No warning ] 
-                'http://prox.x86.co.uk/index.php?', # Open_redirect in proxy [ No warning ] 
-                'https://ersupport.com/plugins/QuickWebProxy/miniProxy.php?', # Open_redirect in proxy [ No warning ] 
-                'http://ps-chi.herokuapp.com/index.php?', # Open_redirect in proxy [ No warning ] 
-                'http://xlx723.dyndns.org/iproxy/miniProxy.php?', # Open_redirect in proxy [ No warning ] 
-                'http://proxy.voracek.net/subdom/proxy/index.php/', # Open_redirect in proxy [ No warning ] 
+ALLOWED_USERS = load_allowed_users('user.txt')
+CREDITS = load_credits('credits.txt')
 
-                
-                '\n--- ONION URLs ---\n',
+def scraper(update: Update, context: CallbackContext):
+    query = update.callback_query
+    query.answer()
 
-                'http://haystak5njsmn2hqkewecpaxetahtwhsbsa64jom2k22z5afxhnpxfid.onion/redir.php?url=',#Redirect using Haystack DEEP WEB search. [ ONION SERVICE][source:M.Anish]
-                'http://zgphrnyp45suenks3jcscwvc5zllyk3vz4izzw67puwlzabw4wvwufid.onion/url.php?u=', #Open_redirect  [ no warning . ]  
+    if query.message.chat_id not in ALLOWED_USERS:
+        return
 
-                '\n--- Tor Onion URL Redirection [ only works for sites ending with .onion ] ---\n',
+    context.user_data["state"] = "scraper_api_key"
+    query.edit_message_text(text="Please enter your API key:")
 
-                'https://ahmia.fi/search/search/redirect?search_term=cat&redirect_url=', #Redirect in Ahmia Search [ easily detectable]     
-                'http://juhanurmihxlp77nkq76byazcldy2hlmovfu2epvl5ankdibsot4csyd.onion/search/search/redirect?search_term=cat&redirect_url=' #Redirect Ahmia [ easily detectable]        
-                ]
+def search_yellowpages(business_type, city, pages):
+    base_url = "https://www.yellowpages.com"
+    results = []
 
-#Function to get URL from user which will be obfuscated by the program.                
-def get_url():
-  print('\n Enter url: ',end='') 
-  global url
-  tmp=input()
-  if tmp.startswith('http://') or tmp.startswith('https://'):
-     url=tmp
-  else:
-     url='http://'+tmp
+    for page in range(1, pages + 1):
+        search_url = f"{base_url}/search?search_terms={business_type}&geo_location_terms={city}&page={page}"
+        response = requests.get(search_url)
+        soup = BeautifulSoup(response.text, 'html.parser')
 
-get_url()
+        for item in soup.find_all("div", class_="result"):
+            try:
+                name = item.find("a", class_="business-name").text
+                address = item.find("div", class_="street-address").text.strip()
+                phone = item.find("div", class_="phone").text.strip()
+                website_tag = item.find("a", class_="track-visit-website")
+                website = website_tag['href'] if website_tag else "No website available"
+                results.append(f"======================\nName: {name}\nAddress: {address}\nPhone: {phone}\nURL: {website}\n")
+            except AttributeError:
+                continue
 
-#Function to write obfuscated URLs to url_obfuscated.txt file.
-def file_w():
-  with open('url_obfuscated.txt','w') as f:
-     for i in open_redirect:
-        if '---' in i:
-           f.write(i)
+    return results
+
+def split_results(results, max_length=4096):
+    chunks = []
+    current_chunk = ""
+
+    for result in results:
+        if len(current_chunk) + len(result) > max_length:
+            chunks.append(current_chunk)
+            current_chunk = ""
+
+        current_chunk += result
+
+    if current_chunk:
+        chunks.append(current_chunk)
+
+    return chunks
+
+def biz(update: Update, context: CallbackContext):
+    update.message.reply_text("Please enter the type of business you're looking for:")
+    context.user_data["state"] = "awaiting_business_type"
+
+def start(update: Update, context: CallbackContext):
+    if update.message.chat_id not in ALLOWED_USERS:
+        join_button = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        text="Join",
+                        url="https://t.me/+QO3d44qHuL4xMGJl",
+                    ),
+                ],
+            ]
+        )
+        update.message.reply_text("Please join our channel to access this bot.", reply_markup=join_button)
+        context.bot.send_message(chat_id=update.message.chat_id, text="Buy this https://t.me/c/1526652665/1768 to get access to this Bot")
+    else:
+        keyboard = [
+            [
+                InlineKeyboardButton("Chat With Me", callback_data="Chat With Me"),
+                InlineKeyboardButton("Search Biz", callback_data="search_biz"),
+                InlineKeyboardButton("Scraper", callback_data="scraper"),
+            ],
+        ]
+
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        update.message.reply_text("Hi I am Levi Ackerman.\n\nPlease choose an option:", reply_markup=reply_markup)
+
+def gpt4_response(prompt):
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {CHATGPT_TOKEN}",
+    }
+
+    data = {
+        "model": "text-davinci-003",
+        "prompt": prompt,
+        "max_tokens": 4000,
+        "temperature": 1.0,
+    }
+
+    response = requests.post(
+        "https://api.openai.com/v1/completions",
+        headers=headers,
+        data=json.dumps(data),
+        verify=False,
+    )
+
+    response_json = response.json()
+    return response_json["choices"][0]["text"]
+
+def validate_hunter_api_key(api_key):
+    url = f"https://api.hunter.io/v2/account?api_key={api_key}"
+    try:
+        response = requests.get(url)
+        data = response.json()
+        if "data" in data:
+            return True
+    except Exception as e:
+        pass
+    return False
+
+import requests
+
+def get_emails_from_domain(api_key, domain):
+    url = f"https://api.hunter.io/v2/domain-search?domain={domain}&api_key={api_key}"
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        print(f"Error: {e}")
+        return None
+
+    data = response.json()
+
+    if "errors" in data:
+        if data["errors"][0]["id"] == "restricted_account":
+            return "restricted_account"
+
+    emails = []
+    for email_obj in data.get("data", {}).get("emails", []):
+        emails.append(email_obj["value"])
+
+    return emails
+
+def extract_domain_from_url(url):
+    parsed_url = urlparse(url)
+    extracted = tldextract.extract(parsed_url.netloc)
+    domain = '.'.join([extracted.domain, extracted.suffix])
+    return domain
+    
+def handle_message(update: Update, context: CallbackContext):
+    if update.message.chat_id not in ALLOWED_USERS:
+        return
+    
+    text = update.message.text
+    state = context.user_data.get("state")
+
+    if state == "awaiting_business_type":
+        context.user_data["business_type"] = text
+        update.message.reply_text("Please enter the city:")
+        context.user_data["state"] = "awaiting_city"
+
+    elif state == "awaiting_city":
+        context.user_data["city"] = text
+        update.message.reply_text("Please enter the number of pages to search:")
+        context.user_data["state"] = "awaiting_pages"
+
+    elif state == "awaiting_pages":
+        pages = int(text)
+        city = context.user_data["city"]
+        business_type = context.user_data["business_type"]
+        results = search_yellowpages(business_type, city, pages)
+
+        if results:
+            result_chunks = split_results(results)
+            for chunk in result_chunks:
+                update.message.reply_text(chunk)
         else:
-           f.write('{}{}\n'.format(i,url))
-        
-file_w()
+            update.message.reply_text("No businesses found.")
+        context.user_data["state"] = None
 
-#Function to obfuscate url using http basic auth.
-def http_basic_auth():
-    custom_url=[
-                 'https://accounts.google.com+signin=secure+v2+identifier=passive@',
-                 'https://facebook.com+login=secure+settings=private@',
-                 'https://instagram.com+accounts=login+settings=private@',
-                 'https://linkedin.com+accounts=securelogin+settings=private@',
-                 'https://github.com+login=secure+settings=private@'
-                ]            
-    with open('url_obfuscated.txt','a+')as f:
-        f.write('\n--- Custom HTTP BASIC AUTH URLS [ Don\'t work in Firefox ] ---\n')
-        for i in custom_url:
-            if url.startswith('https://'):
-               f.write(i+url[8:]+'\n') 
-            elif url.startswith('http://'):
-               f.write(i+url[7:]+'\n')
+    elif state == "scraper_api_key":
+        if validate_hunter_api_key(text):
+            context.user_data["hunter_api_key"] = text
+            context.user_data["state"] = "scraper_domain"
+            update.message.reply_text("Please enter the domain you want to scrape emails from:")
+        else:
+            update.message.reply_text("Invalid API key. Please enter a valid API key:")
 
-http_basic_auth()            
-x=input( '\n {}/url_obfuscated.txt Generated!!!\n\nPress to continue...'.format(os.getcwd()))
+    elif state == "scraper_domain":
+        domain_or_url = text
+        domain = extract_domain_from_url(domain_or_url)
+        if not domain:
+            domain = domain_or_url
+
+        context.user_data["domain"] = domain
+        context.user_data["state"] = None
+
+        hunter_api_key = context.user_data["hunter_api_key"]
+        emails = get_emails_from_domain(hunter_api_key, domain)
+
+        if emails == "restricted_account":
+            update.message.reply_text("Your API key is restricted.")
+        elif emails:
+            update.message.reply_text("Emails found:\n" + '\n'.join(emails))
+            for email in emails:
+                update.message.reply_text(email)
+        else:
+            update.message.reply_text("No emails found for the given domain.")
+    else:
+        input_text = update.message.text
+        output_text = gpt4_response(input_text)
+
+        for word in CREDITS:
+            output_text = output_text.replace(word, "Hackers Assemble")
+
+        output_text += "\n\n@hackers_assemble"
+        update.message.reply_text(output_text)
+
+
+def menu_actions(update: Update, context: CallbackContext):
+    if update.callback_query.message.chat_id not in ALLOWED_USERS:
+        return
+
+    query = update.callback_query
+    query.answer()
+
+    chat_id = query.message.chat_id
+
+    if query.data == "Chat With Me":
+        context.bot.send_message(chat_id=chat_id, text="Hi I am Levi. I am your assistent, send me a task.\n\n@hackers_assemble")
+        context.user_data["selected_option"] = "Chat With Me"
+    elif query.data == "scraper":
+        context.bot.send_message(chat_id=chat_id, text="Please enter your API key:")
+        context.user_data["state"] = "scraper_api_key"
+        context.user_data["selected_option"] = "scraper"
+    elif query.data == "search_biz":
+        context.bot.send_message(chat_id=chat_id, text="Please enter the type of business you're looking for:")
+        context.user_data["state"] = "awaiting_business_type"
+        context.user_data["selected_option"] = "search_biz"
+
+
+def main():
+    updater = Updater(TELEGRAM_BOT_TOKEN, use_context=True)
+    dp = updater.dispatcher
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("biz", biz))
+    dp.add_handler(CallbackQueryHandler(menu_actions))
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
+    dp.add_handler(CallbackQueryHandler(scraper, pattern="^scraper$"))
+
+    updater.start_polling()
+    updater.idle()
+
+if __name__ == "__main__":
+    main()
